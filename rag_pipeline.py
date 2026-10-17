@@ -19,6 +19,7 @@
 import os
 import re
 import numpy as np
+import openai
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 from rank_bm25 import BM25Okapi
@@ -26,15 +27,14 @@ from openai import OpenAI
 
 # %%
 # Configuration. Dans Colab : téléverser le PDF dans /content et définir RODIUM_API_KEY (voir le README).
+# La clé API et le modèle ne sont pas figés ici : ils sont lus au moment de l'appel (voir make_llm_client et get_llm_model).
 PDF_PATH = os.environ.get("RAG_PDF", "/content/Programme et guide 2nd A4 et S.pdf")
 PAGE_START, PAGE_END = 5, 28
 CHUNK_WORDS, CHUNK_OVERLAP = 120, 20
 RRF_K = 60
 TOP_K = 5
 EMB_MODEL_NAME = "intfloat/multilingual-e5-small"
-LLM_MODEL = os.environ.get("RODIUM_MODEL", os.environ.get("LLM_MODEL", "gpt-4o-mini"))
-OPENAI_API_KEY = os.environ.get("RODIUM_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
-OPENAI_BASE_URL = "https://api.rodiumai.io/v1"  # base URL RodiumAI (compatible OpenAI)
+RODIUM_BASE_URL = "https://api.rodiumai.io/v1"  # URL de base RodiumAI (compatible OpenAI)
 
 # %% [markdown]
 # ## 1. Extraction et découpage du PDF
@@ -132,20 +132,62 @@ def build_context(hits):
     )
 
 
+def get_llm_model():
+    """Modèle lu à l'appel : RODIUM_MODEL, sinon LLM_MODEL, sinon gpt-4o-mini."""
+    return os.environ.get("RODIUM_MODEL") or os.environ.get("LLM_MODEL") or "gpt-4o-mini"
+
+
 def make_llm_client():
-    """Retourne un client OpenAI compatible RodiumAI, ou None si aucune clé n'est définie."""
-    if not OPENAI_API_KEY:
+    """Retourne un client OpenAI compatible RodiumAI.
+
+    La clé est lue à chaque appel : RODIUM_API_KEY en priorité, sinon OPENAI_API_KEY.
+    Retourne None et affiche un message clair si aucune clé n'est définie.
+    """
+    api_key = os.environ.get("RODIUM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        print("[RODIUM] Aucune clé API trouvée. Définissez RODIUM_API_KEY (ou OPENAI_API_KEY). Génération désactivée.")
         return None
-    return OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
+    return OpenAI(api_key=api_key, base_url=RODIUM_BASE_URL)
 
 
 def generate_answer(client, query, hits):
+    """Appelle le LLM. Retourne le texte généré, ou None si l'appel échoue (le message d'erreur est affiché)."""
+    if client is None:
+        print("[RODIUM] Pas de client : génération ignorée.")
+        return None
+    model = get_llm_model()
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": "CONTEXTE :\n" + build_context(hits) + "\n\nQUESTION : " + query},
     ]
-    resp = client.chat.completions.create(model=LLM_MODEL, messages=messages, temperature=0)
-    return resp.choices[0].message.content.strip()
+    try:
+        resp = client.chat.completions.create(model=model, messages=messages, temperature=0)
+    except openai.AuthenticationError as e:
+        print("[RODIUM] Échec d'authentification : clé API invalide ou expirée. Vérifiez RODIUM_API_KEY. Détail : {}".format(e))
+        return None
+    except openai.NotFoundError as e:
+        print("[RODIUM] Modèle introuvable : '{}' n'existe pas sur RodiumAI. Vérifiez RODIUM_MODEL. Détail : {}".format(model, e))
+        return None
+    except openai.BadRequestError as e:
+        print("[RODIUM] Requête refusée (nom de modèle invalide ou paramètre incorrect ?) avec le modèle '{}'. Détail : {}".format(model, e))
+        return None
+    except openai.RateLimitError as e:
+        print("[RODIUM] Limite de débit atteinte ou quota épuisé. Réessayez plus tard. Détail : {}".format(e))
+        return None
+    except openai.APIConnectionError as e:
+        print("[RODIUM] Connexion impossible à https://api.rodiumai.io/v1. Vérifiez le réseau. Détail : {}".format(e))
+        return None
+    except openai.APIStatusError as e:
+        print("[RODIUM] Erreur HTTP {} renvoyée par l'API. Détail : {}".format(e.status_code, e))
+        return None
+    except Exception as e:  # filet de sécurité : ne pas faire planter le pipeline
+        print("[RODIUM] Erreur inattendue lors de l'appel à l'API : {}: {}".format(type(e).__name__, e))
+        return None
+    content = resp.choices[0].message.content if resp.choices else None
+    if not content:
+        print("[RODIUM] Réponse vide reçue du modèle '{}'.".format(model))
+        return None
+    return content.strip()
 
 
 def ask(retriever, client, query, method="hybrid", k=TOP_K):
@@ -156,7 +198,7 @@ def ask(retriever, client, query, method="hybrid", k=TOP_K):
         answer = None
     else:
         answer = generate_answer(client, query, hits)
-        print(answer)
+        print(answer if answer is not None else "Aucune réponse générée (voir le message d'erreur ci-dessus).")
     print("\nSources :")
     for i, h in enumerate(hits, start=1):
         print("  [C{}] page {} ({})".format(i, h["page"], h["id"]))
@@ -204,11 +246,14 @@ def mean(values):
 
 def run_evaluation(retriever, client=None):
     report = {}
+    failed_calls = 0
     for method in ["dense", "bm25", "hybrid"]:
         rows = {"hit@1": [], "hit@3": [], "hit@5": [], "cite_prec": [], "refusal_ok": []}
         for ex in EVAL_SET:
             hits = retriever.search(ex["q"], method=method, k=TOP_K)
             text = generate_answer(client, ex["q"], hits) if client is not None else None
+            if client is not None and text is None:
+                failed_calls += 1
             if ex["refusal"]:
                 if text is not None:
                     rows["refusal_ok"].append("INFORMATION ABSENTE" in text)
@@ -230,6 +275,8 @@ def run_evaluation(retriever, client=None):
             mean(rows["cite_prec"]), refus))
     if client is None:
         print("Sans clé API : la précision des citations et le refus ne sont pas mesurés.")
+    if failed_calls:
+        print("[RODIUM] {} appel(s) au LLM ont échoué : précision des citations et refus incomplets (voir les messages ci-dessus).".format(failed_calls))
     return report
 
 # %% [markdown]
