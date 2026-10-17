@@ -25,16 +25,16 @@ from rank_bm25 import BM25Okapi
 from openai import OpenAI
 
 # %%
-# Configuration. Dans Colab : téléverser le PDF dans /content et définir la clé API (voir le README).
+# Configuration. Dans Colab : téléverser le PDF dans /content et définir RODIUM_API_KEY (voir le README).
 PDF_PATH = os.environ.get("RAG_PDF", "/content/Programme et guide 2nd A4 et S.pdf")
 PAGE_START, PAGE_END = 5, 28
 CHUNK_WORDS, CHUNK_OVERLAP = 120, 20
 RRF_K = 60
 TOP_K = 5
 EMB_MODEL_NAME = "intfloat/multilingual-e5-small"
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL") or None
+LLM_MODEL = os.environ.get("RODIUM_MODEL", os.environ.get("LLM_MODEL", "gpt-4o-mini"))
+OPENAI_API_KEY = os.environ.get("RODIUM_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+OPENAI_BASE_URL = "https://api.rodiumai.io/v1"  # base URL RodiumAI (compatible OpenAI)
 
 # %% [markdown]
 # ## 1. Extraction et découpage du PDF
@@ -133,7 +133,7 @@ def build_context(hits):
 
 
 def make_llm_client():
-    """Retourne un client OpenAI compatible, ou None si aucune clé n'est définie."""
+    """Retourne un client OpenAI compatible RodiumAI, ou None si aucune clé n'est définie."""
     if not OPENAI_API_KEY:
         return None
     return OpenAI(api_key=OPENAI_API_KEY, base_url=OPENAI_BASE_URL)
