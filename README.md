@@ -19,7 +19,7 @@ Le PDF source n'est pas inclus dans ce dépôt. Il doit être fourni localement 
 3. Recherche dense : les chunks sont encodés avec le modèle `intfloat/multilingual-e5-small` (préfixe `passage: ` pour les documents, `query: ` pour les questions). Les vecteurs sont normalisés et la similarité cosinus est calculée par produit scalaire avec NumPy.
 4. Recherche lexicale : index BM25 (`rank_bm25`) sur les tokens en minuscules, qui conserve les sigles comme PHY.2 ou CHI.3.
 5. Fusion hybride : les classements dense et BM25 sont fusionnés par RRF (Reciprocal Rank Fusion, k = 60).
-6. Génération : un client compatible OpenAI (modèle par défaut `gpt-4o-mini`, température 0) reçoit les chunks récupérés sous la forme `[C1]`, `[C2]`, etc. Le prompt impose de citer chaque affirmation et de répondre exactement "INFORMATION ABSENTE" si la réponse n'est pas dans le contexte.
+6. Génération : un client compatible OpenAI pointant vers l'API RodiumAI (température 0) reçoit les chunks récupérés sous la forme `[C1]`, `[C2]`, etc. Le prompt impose de citer chaque affirmation et de répondre exactement "INFORMATION ABSENTE" si la réponse n'est pas dans le contexte.
 7. Évaluation : pour chaque méthode (dense, bm25, hybrid), le script calcule hit@1, hit@3, hit@5, la précision des citations et le taux de refus correct sur un jeu de 5 questions de programme et 1 question hors document.
 
 ## Configuration
@@ -27,9 +27,35 @@ Le PDF source n'est pas inclus dans ce dépôt. Il doit être fourni localement 
 Les paramètres se règlent par variables d'environnement :
 
 - `RAG_PDF` : chemin du PDF (par défaut `/content/Programme et guide 2nd A4 et S.pdf`, pour Colab).
-- `OPENAI_API_KEY` : clé API. Sans clé, la génération est désactivée et seuls les chunks récupérés sont affichés.
-- `OPENAI_BASE_URL` : URL optionnelle pour un fournisseur compatible OpenAI.
-- `LLM_MODEL` : modèle de génération (par défaut `gpt-4o-mini`).
+- `RODIUM_API_KEY` : clé API RodiumAI. Si elle n'est pas définie, le script se rabat sur `OPENAI_API_KEY`. Sans clé, la génération est désactivée et seuls les chunks récupérés sont affichés.
+- `RODIUM_MODEL` : modèle de génération GPT sur RodiumAI. Si elle n'est pas définie, le script se rabat sur `LLM_MODEL`, puis sur `gpt-4o-mini`. Vous pouvez aussi utiliser `gpt-3.5-turbo` ou `gpt-4o`.
+
+L'URL de base de l'API est fixée dans le code : `https://api.rodiumai.io/v1` (client `OpenAI(base_url=..., api_key=...)`, sans le chemin `/chat/completions`, ajouté automatiquement par le client).
+
+### Configurer les identifiants RodiumAI
+
+Dans un terminal (Linux ou macOS) :
+
+```bash
+export RODIUM_API_KEY="votre_clé_rodium"
+export RODIUM_MODEL="gpt-4o-mini"   # optionnel : gpt-3.5-turbo ou gpt-4o
+```
+
+Dans Windows PowerShell :
+
+```powershell
+$env:RODIUM_API_KEY = "votre_clé_rodium"
+$env:RODIUM_MODEL = "gpt-4o-mini"
+```
+
+Sur Colab, ajoutez la clé dans la cellule de configuration avant d'exécuter le pipeline :
+
+```python
+import os
+os.environ["RODIUM_API_KEY"] = "votre_clé_rodium"
+```
+
+Ne committez jamais la clé dans le dépôt.
 
 ## Installation
 
@@ -43,11 +69,11 @@ Dans un terminal :
 
 ```bash
 export RAG_PDF="chemin/vers/Programme et guide 2nd A4 et S.pdf"
-export OPENAI_API_KEY="votre_clé"
+export RODIUM_API_KEY="votre_clé_rodium"
 python rag_pipeline.py
 ```
 
-Sur Colab, téléverser le PDF dans `/content`, puis exécuter les cellules du notebook dans l'ordre.
+Sur Colab, téléverser le PDF dans `/content`, définir `RODIUM_API_KEY`, puis exécuter les cellules du notebook dans l'ordre.
 
 La fonction `ask(retriever, client, query, method="hybrid")` permet de poser une question libre et affiche la réponse avec ses sources.
 
